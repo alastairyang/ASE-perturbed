@@ -1,7 +1,7 @@
-% load Eliza's continental model
 % parameters
-p = 8;
-q = 1;
+p = 3; % budd sliding
+q = 1; % budd sliding
+min_H = 5; % minimal ice thickness
 
 common_data_dir  = getenv("COMMON_DATA");
 project_data_dir = getenv("PROJECT_DATA");
@@ -40,7 +40,7 @@ surf_bm  = double(ncread(bedmap_path,'surface_topography'));
 
 % interp with provided function
 bed       = InterpFromGridToMesh(x_bm, flipud(y_bm), flipud(bed_bm'), md.mesh.x, md.mesh.y,nan);
-surface   = InterpFromGridToMesh(x_bm, flipud(y_bm), flipud(surf_bm'), md.mesh.x, md.mesh.y,nan);
+% surface   = InterpFromGridToMesh(x_bm, flipud(y_bm), flipud(surf_bm'), md.mesh.x, md.mesh.y,nan);
 thickness = InterpFromGridToMesh(x_bm, flipud(y_bm), flipud(thick_bm'), md.mesh.x, md.mesh.y,nan);
 
 
@@ -56,27 +56,20 @@ if sum(isnan(thickness)) > 0
     y_temp(nan_idx) = [];
     thickness_temp(nan_idx) = [];
     Fthickness = scatteredInterpolant(x_temp, y_temp, thickness_temp,...
-                                      'nearest', 'nearest');
+                                      'linear', 'linear');
     thickness_extrap = Fthickness(x_nan, y_nan);
     thickness(nan_idx) = thickness_extrap; 
 
     % make some plots
     disp('NaN values detected after interpolating ice thickness!')
-    %plotmodel(md,'data',nan_flag,...
+    % plotmodel(md,'data',nan_flag,...
     %             'data', thickness,...
     %             'title','nan flags',...
     %             'title','after extra/interpolation (nearest)');
-    
+    % 
     
 end
 
-% geometry: This domain only contains the grounded ice.
-md.geometry.bed = bed
-md.geometry.base = md.geometry.bed;
-md.geometry.thickness = thickness;
-md.geometry.surface = md.geometry.base + md.geometry.thickness;
-md.mask.ice_levelset = -1*ones(md.mesh.numberofvertices, 1);
-md.mask.ocean_levelset = -1*md.mask.ice_levelset; % grounded everywhere
 
 % load velocity
 md.initialization.vx = vx_md;
@@ -86,6 +79,53 @@ md.initialization.vel = sqrt(md.initialization.vx.^2 +...
                              md.initialization.vy.^2 +...
                              md.initialization.vz.^2);
 md.initialization.vel(md.mask.ice_levelset>=0) = 0;
+
+% load grounded and floating ice levelsets
+mask_file = [project_data_dir 'masks/gh_thwaites_pi_grid_mask_1000m.csv'];
+mask = readtable(mask_file); % grounded: 1; floating: 0
+
+mask_interp_func = scatteredInterpolant(mask.x_m, mask.y_m, mask.mask,...
+                                        'nearest');
+mask_mesh = mask_interp_func(md.mesh.x, md.mesh.y);
+% load the pinning point contour line
+pinning_point_file = [project_data_dir 'exp-files/pinning-point.exp'];
+pinning_point = expread(pinning_point_file);
+% find points inside it
+in = inpolygon(md.mesh.x, md.mesh.y, pinning_point.x, pinning_point.y);
+mask_mesh(in) = 0;
+% ice is present every where (no ocean-only element)
+md.mask.ice_levelset = -1*ones(md.mesh.numberofvertices, 1);
+md.mask.ocean_levelset = -1*md.mask.ice_levelset;
+floating_ice_flag = ~logical(mask_mesh);
+md.mask.ocean_levelset(floating_ice_flag) = -1 * md.mask.ocean_levelset(floating_ice_flag);
+
+% find super low velocity on ice shelf
+% this is due to mismatch between velocity data set and the 
+% grounded / floating ice mask
+remove_ice_file1 = [project_data_dir 'exp-files/thwaites-no-ice-on-shelf-1.exp'];
+remove_ice_file2 = [project_data_dir 'exp-files/thwaites-no-ice-on-shelf-2.exp'];
+remove_ice_1 = expread(remove_ice_file1);
+remove_ice_2 = expread(remove_ice_file2);
+in_1 = inpolygon(md.mesh.x, md.mesh.y, remove_ice_1.x, remove_ice_1.y);
+in_2 = inpolygon(md.mesh.x, md.mesh.y, remove_ice_2.x, remove_ice_2.y);
+% make then ice-free
+md.mask.ice_levelset(in_1) = 1;
+md.mask.ice_levelset(in_2) = 1;
+
+% ice geometry: we use BM bed and thickness and derived masks to 
+% build surface geometry
+freeboard_from_h_prefactor = (md.materials.rho_water-md.materials.rho_ice)/md.materials.rho_water;
+h_from_surfelev_prefactor  = md.materials.rho_water / (md.materials.rho_water - md.materials.rho_ice);
+min_S = min_H * h_from_surfelev_prefactor;
+md.geometry.bed = bed;
+md.geometry.thickness = thickness;
+grounded_idx = md.mask.ocean_levelset>0;
+floating_idx = md.mask.ocean_levelset<0 & md.mask.ice_levelset<0; % and ice is present
+surface = min_S * ones(md.mesh.numberofvertices,1);
+surface(grounded_idx) = thickness(grounded_idx) + bed(grounded_idx);
+surface(floating_idx) = freeboard_from_h_prefactor * thickness(floating_idx);
+md.geometry.surface = surface;
+md.geometry.base = md.geometry.surface - md.geometry.thickness;
 
 % Core
 np = min(round(md.mesh.numberofelements/1000), feature('numcores'));
@@ -105,7 +145,7 @@ md.friction.p = p*ones(md.mesh.numberofelements,1);
 md.friction.q = q*ones(md.mesh.numberofelements,1);
 md.friction.coupling = 1; % 1: ice pressure only
 % initialize sliding law coefficient
-md.friction.coefficient = 500*ones(md.mesh.numberofvertices,1); % previous: 100
+md.friction.coefficient = 100*ones(md.mesh.numberofvertices,1); % previous: 100
 
 % set boundary condition
 md = SetMarineIceSheetBC(md);
@@ -117,9 +157,9 @@ md.masstransport.spcthickness = NaN*ones(md.mesh.numberofvertices,1);
 md.masstransport.spcthickness(pos) = md.geometry.thickness(pos);
 
 % materials
-md.materials.rheology_B = cuffey(265.15)*ones(md.mesh.numberofvertices,1); % -23 degree depth averaged
+md.materials.rheology_B = cuffey(260.15)*ones(md.mesh.numberofvertices,1);
 md.materials.rheology_n = 3*ones(md.mesh.numberofelements,1);
-md.materials.rheology_law = 'CuffeyTemperate';
+md.materials.rheology_law = 'Cuffey';
 
 disp('   Adjusting ice mask');
 %Tricky part here: we want to offset the mask by one element so that we don't end up with a cliff at the transition

@@ -9,22 +9,17 @@
 
 % ----------------------------------------
 % -------------- PARAMETERS --------------
-sim_steps = [1,2];
+sim_steps = [4];
+name = 'ASE';
 Ts_spec = "max";
 smb_spec = "max";
 sliding_spec = "softsliding";
+nproc = 20; 
 
 % -----------------------------------------
 
 % ---------- name - expfile pair
-switch name
-    case 'Amundsen'
-        drainage_filename = 'drainage_G-H_subsample.exp';
-    case 'Wilkes'
-        drainage_filename = 'drainage-D_subsample.exp';
-    otherwise
-        error('Unknown region name!')
-end
+drainage_filename = 'gh_thwaites_pi_boundary_subsampled_20perc.exp';
 
 % ---------- END OF PARAMETERS --------------
 % get the environmental variables
@@ -38,7 +33,7 @@ end
 
 % set project name
 modelername = 'Yang';
-model_name = [name '_thermal'];
+model_name = [name '_perturbed'];
 
 % dataset paths
 % make folder for experiment (i.e., this combination of parameters)
@@ -118,7 +113,7 @@ for steps = sim_steps
         eps_eff_vertice = F_eps_eff(md.mesh.x, md.mesh.y);
 
         md = bamg(md, 'field', 3e3*eps_eff_vertice, ...
-                     'hmax', 20000, 'hmin', 4000,'err',0.5); % original: hmax=40000, err = 3; to be replaced with hmax=20000, err=0.5
+                     'hmax', 20000, 'hmin', 4000,'err',2); % original: hmax=40000, err = 3; to be replaced with hmax=20000, err=0.5
     
         clear vel_md vx_md vy_md 
             
@@ -131,7 +126,7 @@ for steps = sim_steps
         md.stressbalance.abstol=NaN;
         md.stressbalance.restol=1e-4;
         md.stressbalance.maxiter=50;
-        md.toolkits.DefaultAnalysis = bcgslbjacobioptions(); % faster solution; robust for 2D SSA
+        % md.toolkits.DefaultAnalysis = bcgslbjacobioptions(); % just for the first 2D inversion 
         md.settings.solver_residue_threshold = 1e-3; % I set it; Denis didn't.
 
         savemodel(org,md);
@@ -213,19 +208,19 @@ for steps = sim_steps
         md.stressbalance.restol = 0.001;
         md.stressbalance.reltol = 0.1;
         md.stressbalance.abstol = NaN;
-
-        % you can make the following nan for inversion if it's really
-        % struggling (e.g. high exponent in the sliding
-        % parameterization), but before to turn this back on 
-        md.settings.solver_residue_threshold = nan;
-       
+        % 
+        % % you can make the following nan for inversion if it's really
+        % % struggling (e.g. high exponent in the sliding
+        % % parameterization), but be sure to turn this back on 
+        % md.settings.solver_residue_threshold = nan;
+        % 
         disp('Starting inversion!') 
         md = solve(md,'sb');
         md = loadresultsfromcluster(md);
 
         if isa(md.mesh, 'mesh2d') % haven't extruded into 3d model
             disp("   Extruding into 3D model...")
-            md = extrude(md, 8, 2.5);
+            md = extrude(md, 5, 2.5);
             md = setflowequation(md, 'HO','all');
             
             md.friction.coefficient = repmat(md.results.StressbalanceSolution.FrictionCoefficient,...
@@ -268,10 +263,35 @@ for steps = sim_steps
         savemodel(org,md);
     end % }}}
 
-    if perform(org, 'PrescribeThermalBC') % {{{4 step 4 prescribe thermal boundary
-        stepname = 'PrescribeThermalBC';
+    if perform(org, 'Inversion3D') % {{{4 step 4 inversion with 3D model
+        stepname = 'Inversion3D';
 
         md = loadmodel(org, 'Inversion');
+
+        md.inversion.iscontrol = 1;
+        md.inversion.maxiter = 10;
+        md = solve(md,'sb');
+        md = loadresultsfromcluster(md);
+
+        % update the fields
+        md.friction.coefficient = md.results.StressbalanceSolution.FrictionCoefficient;
+        md.initialization.vx = md.results.StressbalanceSolution.Vx;
+        md.initialization.vy = md.results.StressbalanceSolution.Vy;
+        md.initialization.vz = md.results.StressbalanceSolution.Vz;
+        md.initialization.vel = sqrt(md.initialization.vx.^2 + ...
+                                     md.initialization.vy.^2 + ...
+                                     md.initialization.vz.^2);
+        md.initialization.pressure=md.results.StressbalanceSolution.Pressure;
+
+        savemodel(org,md);
+    end
+        
+
+    if perform(org, 'PrescribeThermalBC') % {{{5 step 5 prescribe thermal boundary
+        stepname = 'PrescribeThermalBC';
+
+        md = loadmodel(org, 'Inversion3D');
+        md.inversion.iscontrol = 0;
 
         % set up cluster information
         md.settings.waitonlock = 0;
@@ -301,13 +321,13 @@ for steps = sim_steps
 
         switch Ts_spec
             case "max"
-                load([project_data_dir 'saved-data/Ts-RCM/Ts_max.mat']);
+                load([project_data_dir 'data/Ts-RCM/Ts_max.mat']);
                 func_ts = scatteredInterpolant(Ts_max_struct.x, ...
                                            Ts_max_struct.y,...
                                            Ts_max_struct.Ts);
                 % md.miscellaneous.name = [md.miscellaneous.name '; Ts: max'];
             case "min"
-                load([project_data_dir 'saved-data/Ts-RCM/Ts_min.mat']);
+                load([project_data_dir 'data/Ts-RCM/Ts_min.mat']);
                 func_ts = scatteredInterpolant(Ts_min_struct.x, ...
                                            Ts_min_struct.y,...
                                            Ts_min_struct.Ts);
@@ -317,13 +337,13 @@ for steps = sim_steps
         end
         switch smb_spec
             case "max"
-                load([project_data_dir 'saved-data/SMB-RCM/smb_max.mat']);
+                load([project_data_dir 'data/SMB-RCM/smb_max.mat']);
                 func_smb = scatteredInterpolant(smb_max_struct.x, ...
                                            smb_max_struct.y,...
                                            smb_max_struct.Ts);
                 % md.miscellaneous.name = [md.miscellaneous.name '; SMB: max'];
             case "min"
-                load([project_data_dir 'saved-data/SMB-RCM/smb_min.mat']);
+                load([project_data_dir 'data/SMB-RCM/smb_min.mat']);
                 func_smb = scatteredInterpolant(smb_min_struct.x, ...
                                            smb_min_struct.y,...
                                            smb_min_struct.Ts);
