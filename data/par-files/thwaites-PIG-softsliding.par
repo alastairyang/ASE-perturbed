@@ -136,6 +136,9 @@ md.cluster = cluster;
 min_H = 10;
 pos = find(md.geometry.thickness < min_H);
 md.geometry.surface(pos) = md.geometry.base(pos)+min_H;
+% again ensure that bed <= base everywhere
+pos = find(md.geometry.bed > md.geometry.base);
+md.geometry.base(pos) = md.geometry.bed(pos);
 md.geometry.thickness = md.geometry.surface - md.geometry.base;
 
 % sliding law inversion: simpliest to start with

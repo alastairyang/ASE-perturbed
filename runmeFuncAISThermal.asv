@@ -9,7 +9,7 @@
 
 % ----------------------------------------
 % -------------- PARAMETERS --------------
-sim_steps = [2,3];
+sim_steps = [6];
 name = 'ASE';
 Ts_spec = "max";
 smb_spec = "max";
@@ -113,7 +113,7 @@ for steps = sim_steps
         eps_eff_vertice = F_eps_eff(md.mesh.x, md.mesh.y);
 
         md = bamg(md, 'field', 3e3*eps_eff_vertice, ...
-                     'hmax', 20000, 'hmin', 4000,'err',0.5); % original: hmax=40000, err = 3; to be replaced with hmax=20000, err=0.5
+                     'hmax', 20000, 'hmin', 4000,'err',2); % original: hmax=40000, err = 3; to be replaced with hmax=20000, err=0.5
     
         clear vel_md vx_md vy_md 
             
@@ -220,7 +220,7 @@ for steps = sim_steps
 
         if isa(md.mesh, 'mesh2d') % haven't extruded into 3d model
             disp("   Extruding into 3D model...")
-            md = extrude(md, 8, 2.5);
+            md = extrude(md, 5, 2.5);
             md = setflowequation(md, 'HO','all');
             
             md.friction.coefficient = repmat(md.results.StressbalanceSolution.FrictionCoefficient,...
@@ -263,12 +263,35 @@ for steps = sim_steps
         savemodel(org,md);
     end % }}}
 
-    if perform(org, 'Inversion3D') % {{{4 step 4 inversion 
-
-    if perform(org, 'PrescribeThermalBC') % {{{4 step 4 prescribe thermal boundary
-        stepname = 'PrescribeThermalBC';
+    if perform(org, 'Inversion3D') % {{{4 step 4 inversion with 3D model
+        stepname = 'Inversion3D';
 
         md = loadmodel(org, 'Inversion');
+
+        md.inversion.iscontrol = 1;
+        md.inversion.maxiter = 10;
+        md = solve(md,'sb');
+        md = loadresultsfromcluster(md);
+
+        % update the fields
+        md.friction.coefficient = md.results.StressbalanceSolution.FrictionCoefficient;
+        md.initialization.vx = md.results.StressbalanceSolution.Vx;
+        md.initialization.vy = md.results.StressbalanceSolution.Vy;
+        md.initialization.vz = md.results.StressbalanceSolution.Vz;
+        md.initialization.vel = sqrt(md.initialization.vx.^2 + ...
+                                     md.initialization.vy.^2 + ...
+                                     md.initialization.vz.^2);
+        md.initialization.pressure=md.results.StressbalanceSolution.Pressure;
+
+        savemodel(org,md);
+    end
+        
+
+    if perform(org, 'PrescribeThermalBC') % {{{5 step 5 prescribe thermal boundary
+        stepname = 'PrescribeThermalBC';
+
+        md = loadmodel(org, 'Inversion3D');
+        md.inversion.iscontrol = 0;
 
         % set up cluster information
         md.settings.waitonlock = 0;
@@ -283,7 +306,8 @@ for steps = sim_steps
         md2d_e.mesh.elements = md_eliza.mesh.elements2d;
         md2d_e.mesh.numberofelements = md_eliza.mesh.numberofelements2d;
         md2d_e.mesh.numberofvertices = md_eliza.mesh.numberofvertices2d;
-        
+        disp('----Eliza model is loaded!')
+
         % my model but 2D
         md2d = model();
 
@@ -298,13 +322,13 @@ for steps = sim_steps
 
         switch Ts_spec
             case "max"
-                load([project_data_dir 'saved-data/Ts-RCM/Ts_max.mat']);
+                load([project_data_dir 'Ts-RCM/Ts_max.mat']);
                 func_ts = scatteredInterpolant(Ts_max_struct.x, ...
                                            Ts_max_struct.y,...
                                            Ts_max_struct.Ts);
                 % md.miscellaneous.name = [md.miscellaneous.name '; Ts: max'];
             case "min"
-                load([project_data_dir 'saved-data/Ts-RCM/Ts_min.mat']);
+                load([project_data_dir 'Ts-RCM/Ts_min.mat']);
                 func_ts = scatteredInterpolant(Ts_min_struct.x, ...
                                            Ts_min_struct.y,...
                                            Ts_min_struct.Ts);
@@ -314,13 +338,13 @@ for steps = sim_steps
         end
         switch smb_spec
             case "max"
-                load([project_data_dir 'saved-data/SMB-RCM/smb_max.mat']);
+                load([project_data_dir 'SMB-RCM/smb_max.mat']);
                 func_smb = scatteredInterpolant(smb_max_struct.x, ...
                                            smb_max_struct.y,...
                                            smb_max_struct.Ts);
                 % md.miscellaneous.name = [md.miscellaneous.name '; SMB: max'];
             case "min"
-                load([project_data_dir 'saved-data/SMB-RCM/smb_min.mat']);
+                load([project_data_dir 'SMB-RCM/smb_min.mat']);
                 func_smb = scatteredInterpolant(smb_min_struct.x, ...
                                            smb_min_struct.y,...
                                            smb_min_struct.Ts);
@@ -340,7 +364,7 @@ for steps = sim_steps
         STmean = -40 + 273.15;
         BTmean = -10 + 273.15; % use only as a first guess for model initialization
         
-        % thermal model: initial and boundary conditions
+        % thermal model: initial and surface boundary conditions
         md.thermal.spctemperature = NaN*ones(md.mesh.numberofvertices, 1);
         md.thermal.spctemperature(find(md.mesh.vertexonsurface)) = Ts;
         md.thermal.spctemperature(find(md.mesh.vertexonboundary)) = Tinterp(find(md.mesh.vertexonboundary));
@@ -373,7 +397,7 @@ for steps = sim_steps
         savemodel(org,md);
     end
 
-    if perform(org,'ThermalSteadyState') % {{{5 step 5 thermal steady state model
+    if perform(org,'ThermalSteadyState') % {{{6 step 6 thermal steady state model
         % here we do initialize the rheology and do a transient
         % relaxation
         stepname = 'ThermalSteadyState';
@@ -404,8 +428,25 @@ for steps = sim_steps
             md.initialization.vz.^2);
 
         % geothermal heat flux
-        md.basalforcings.geothermalflux = zeros(size(md.mesh.vertexonbase));
-        md.basalforcings.geothermalflux(logical(md.mesh.vertexonbase)) = 80*1e-3;
+        % load GHF posterior mean from the inference
+        posterior_path = '/data-archive/ASE-inference/';
+        ghf_posterior = load([posterior_path 'GHF/posterior_low_mean_high.mat']);
+        ghf_mean_interp = InterpFromGridToMesh(ghf_posterior.x, ghf_posterior.y,...
+                                               ghf_posterior.posterior_mean,...
+                                               md.mesh.x2d, md.mesh.y2d, nan);
+        % slightly extrapolate to areas under ice shelf
+        % GHF there doesn't matter anyways
+        nonnan_idx = ~isnan(ghf_mean_interp);
+        nonnan_x   = md.mesh.x2d(nonnan_idx);
+        nonnan_y   = md.mesh.y2d(nonnan_idx);
+        nonnan_ghf = ghf_mean_interp(nonnan_idx);
+        ghf_mean_interp_func = scatteredInterpolant(nonnan_x, nonnan_y,...
+                                                    nonnan_ghf, 'linear','linear');
+        ghf_mean_interp_full = ghf_mean_interp_func(md.mesh.x2d, md.mesh.y2d) * 1e-3; % convert to W/m^2
+        
+        ghf_prefactor = 0.8; % ad hoc measure to make interior cooler
+
+        md.basalforcings.geothermalflux = repmat(ghf_mean_interp_full, md.mesh.numberoflayers,1);
 
         % solver specification
         md.timestepping.time_step = 0;
@@ -426,26 +467,36 @@ for steps = sim_steps
         % update ice rheology
         md.materials.rheology_B = cuffey(md.results.ThermalSolution.Temperature);
 
-        % do a long-term relaxation (stress-balance only)
+        % ----------- do a long-term relaxation ------------------------
         % first a fixed timestep to ensure stability
         md.transient.isthermal = 0;
+        md.transient.isgroundingline = 1;
 
         md.timestepping.time_step  = 0.005;
         md.timestepping.final_time = 3;
+        
+        % necessary once isgroundingline is turned on 
+        md.calving.calvingrate = zeros(md.mesh.numberofvertices,1);
+        md.frontalforcings.meltingrate = zeros(md.mesh.numberofvertices,1);
+        md.frontalforcings.ablationrate = zeros(md.mesh.numberofvertices,1);
 
         md.settings.output_frequency = 200; 
         md = solve(md,'tr');
         md = loadresultsfromcluster(md);
 
         % save an immediate version just in case
-        % save([project_data_dir 'saved-models/intermediate/ASE_before_thermal_relax.mat'],'md')
+        save([result_data_dir 'model/intermediate/ASE_before_thermal_transient_relax.mat'],'md')
 
-        % then do an adaptive time stepping
+        % --------- relaxed with adaptive time stepping ------------------
         % coupled with thermal solution
         md = transientrestart(md);
+
+        % with the relaxed geometry, update the boundary conditon
+        replicate=repmat(md.geometry.surface-md.mesh.z,1,size(md.thermal.spctemperature,2));
+        apm = md.materials.meltingpoint-md.materials.beta*md.materials.rho_ice*md.constants.g*replicate+1e-5;
+        md.thermal.spctemperature(find(md.thermal.spctemperature > apm)) = apm(md.thermal.spctemperature > apm);
         md.transient.isthermal = 1;
 
-        % md.thermal.isenthalpy = 0;
         md.materials.rheology_law = 'Cuffey';
         md.initialization.temperature   = md.results.ThermalSolution.Temperature;
         md.initialization.waterfraction = md.results.ThermalSolution.Waterfraction;
@@ -464,5 +515,81 @@ for steps = sim_steps
 
         savemodel(org,md);
     end
+
+    if perform(org,'ShelfCollapseConstantStep') % {{{7 step 7 perturbation: shelf collapse - Small constant time stepping
+        % here we completely remove the ice shelf
+        stepname = 'ShelfCollapseConstantStep';
+        md = loadmodel(org, 'ThermalSteadyState');
+        md = transientrestart(md);
+
+        % whole sim duration
+        t_final = 100;
+        t_phase1 = 1;
+        t_phase2 = t_final;
+
+        % with the relaxed geometry, update the thermal dirichlet boundary conditon
+        replicate=repmat(md.geometry.surface-md.mesh.z,1,size(md.thermal.spctemperature,2));
+        apm = md.materials.meltingpoint-md.materials.beta*md.materials.rho_ice*md.constants.g*replicate+1e-5;
+        md.thermal.spctemperature(find(md.thermal.spctemperature > apm)) = apm(md.thermal.spctemperature > apm);
+
+        % regular time stepping to avoid blowing up
+        % run for small number of years
+        md.timestepping = timestepping();
+        md.timestepping.time_step = 0.01;
+        md.timestepping.final_time = t_phase1;
+        md.settings.output_frequency = 20;
+
+
+        % update the mask
+        shelf_idx = md.mask.ocean_levelset(1:md.mesh.numberofvertices2d) < 0;
+        init_ice_mask = md.mask.ice_levelset(1:md.mesh.numberofvertices2d);
+        collapse_ice = init_ice_mask;
+        collapse_ice(shelf_idx) = 1;
+
+        n_layer = md.mesh.numberoflayers;
+
+        init_ice_mask = repmat(init_ice_mask, n_layer, 1);
+        collapse_ice_mask = repmat(collapse_ice, n_layer, 1); % collapse after one timestep
+        phase1_ice_mask    = repmat(collapse_ice, n_layer,1); % hold position
+        phase2_ice_mask    = repmat(collapse_ice, n_layer,1); % hold position
+
+        % add time stamp
+        init_ice_mask_t = [init_ice_mask; md.timestepping.start_time];
+        collapse_ice_mask_t = [collapse_ice_mask; md.timestepping.time_step];
+        phase1_ice_mask_t   = [phase1_ice_mask; t_phase1];
+        phase2_ice_mask_t   = [phase2_ice_mask; t_phase2];
+
+        md.levelset.spclevelset = [init_ice_mask_t, collapse_ice_mask_t, phase1_ice_mask_t, phase2_ice_mask_t];
+        
+        % transient settings
+        md.transient.ismovingfront = 1;
+
+        % solve
+        md = solve(md,'tr');
+        md = loadresultsfromcluster(md);        
+
+        savemodel(org, md);
+    end
+
+    if perform(org, 'ShelfCollapseAdaptive') % {{{8 step 8 perturbation: shelf collapse - adaptive time stepping
+        stepname = 'ShelfCollapseAdaptive';
+        md = loadmodel(org, 'ShelfCollapseConstantStep');
+        md = transientrestart(md);
+        
+        md.timestepping = timesteppingadaptive();
+        md.timestepping.start_time = md.levelset.spclevelset(end, end-1);
+
+        md.settings.output_frequency = 50;
+
+        % solve
+        md = solve(md,'tr');
+        md = loadresultsfromcluster(md);        
+
+        savemodel(org, md);
+
+
+    end
+
+        
 end
 
