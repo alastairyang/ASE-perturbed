@@ -1,6 +1,7 @@
 %% ============================================================
 %  Paths & colormaps
 %% ============================================================
+cd("/home/donglaiyang/Documents/Georgia-Tech/Research/ASE-perturbed")
 CESM_path = '/data-archive/ISMIP6-climate-forcing/CESM2-WACCM_ssp585/';
 CCSM_path = '/data-archive/ISMIP6-climate-forcing/CCSM4-RCP85/';
 
@@ -21,12 +22,12 @@ pp = projcrs(3031); % EPSG:3031, Antarctic Polar Stereographic
 models(1).name     = 'CESM2-WACCM';
 models(1).f_to2100 = [CESM_path 'CESM2-WACCM_16km_anomaly_ssp585_1995-2100.nc'];
 models(1).f_to2300 = [CESM_path 'CESM2-WACCM_16km_anomaly_ssp585_2101-2299.nc'];
-models(1).outfile  = 'CESM2-WACCM_16km_anomaly2015_ssp585_1995-2300.mat';
+models(1).outfile  = 'data/projection-climate-forcing/CESM2-WACCM_16km_anomaly2015_ssp585_1995-2300.mat';
 
 models(2).name     = 'CCSM4';
 models(2).f_to2100 = [CCSM_path 'CCSM4_16km_anomaly_1995-2100.nc'];
 models(2).f_to2300 = [CCSM_path 'CCSM4_16km_anomaly_2101-2300.nc'];
-models(2).outfile  = 'CCSM4_16km_anomaly2015_RCP85_1995-2300.mat';
+models(2).outfile  = 'data/projection-climate-forcing/CCSM4_16km_anomaly2015_RCP85_1995-2300.mat';
 
 %% ============================================================
 %  Main loop: process each model
