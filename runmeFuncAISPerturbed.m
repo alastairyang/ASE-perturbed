@@ -9,12 +9,15 @@
 
 % ----------------------------------------
 % -------------- PARAMETERS --------------
-sim_steps = [6, 7 , 8];
+sim_steps = [7,8];
 name = 'ASE';
 Ts_spec = "max";
 smb_spec = "max";
 sliding_spec = "softsliding";
-nproc = 20; 
+nproc   = 20; 
+t_final = 275; % duration of perturbation run. (through 2300)
+t_phase1 = 1;  % duration of constant time stepping (relaxing). 
+
 
 % -----------------------------------------
 
@@ -523,8 +526,6 @@ for steps = sim_steps
         md = transientrestart(md);
 
         % whole sim duration
-        t_final = 200;
-        t_phase1 = 1;
         t_phase2 = t_final;
 
         % with the relaxed geometry, update the thermal dirichlet boundary conditon
@@ -571,20 +572,74 @@ for steps = sim_steps
         savemodel(org, md);
     end
 
-    if perform(org, 'ShelfCollapseAdaptive') % {{{8 step 8 perturbation: shelf collapse - adaptive time stepping
-        stepname = 'ShelfCollapseAdaptive';
+    if perform(org, 'ShelfCollapseAdaptiveRegularSliding') % {{{8 step 8 perturbation: shelf collapse - adaptive time stepping 
         md = loadmodel(org, 'ShelfCollapseConstantStep');
         md = transientrestart(md);
-        
-        md.timestepping = timesteppingadaptive();
-        md.timestepping.start_time = md.levelset.spclevelset(end, end-1);
-        md.timestepping.final_time = md.levelset.spclevelset(end, end);
 
         md.settings.output_frequency = 50;
+        md.stressbalance.requested_outputs = {'default', 'StrainRateeffective'}; 
+        
+        md.timestepping = timesteppingadaptive();
+        md.timestepping.start_time = t_phase1;
+        md.timestepping.final_time = md.timestepping.start_time + t_final;
 
         % solve
         md = solve(md,'tr');
         md = loadresultsfromcluster(md);        
+
+
+        savemodel(org, md);
+
+
+    end
+
+    if perform(org, 'ShelfCollapseAdaptiveTempSliding') % {{{9 step 9 perturbation: shelf collapse - adaptive time stepping and temperature-dependent sliding coefficient
+        md = loadmodel(org, 'ShelfCollapseConstantStep');
+        md = transientrestart(md);
+
+        % create an empty struct field to collect 
+        results = [];
+
+        md.settings.output_frequency = 4;
+        md.stressbalance.requested_outputs = {'default', 'StrainRateeffective'}; 
+        
+        md.timestepping = timesteppingadaptive();
+
+        delta_t = 1; % update rheology every 1 year
+        nt = floor(t_final / delta_t);
+        
+        for ii = 1:nt
+            disp(['Starting run segment no. ' num2str(ii) ' !'])
+            if ii ~= 1
+                md.materials.rheology_B = cuffey(md.results.TransientSolution(end).Temperature);
+                
+                results = [results, md.results.TransientSolution];
+
+                end_time_prev = md.timestepping.final_time;
+                md = transientrestart(md);
+            else
+                end_time_prev = t_phase1;
+            end
+
+            % update temperature B.C.
+            replicate=repmat(md.geometry.surface-md.mesh.z,1,size(md.thermal.spctemperature,2));
+            apm = md.materials.meltingpoint-md.materials.beta*md.materials.rho_ice*md.constants.g*replicate+1e-5;
+            md.thermal.spctemperature(find(md.thermal.spctemperature > apm)) = apm(md.thermal.spctemperature > apm);
+
+
+            md.timestepping.start_time = end_time_prev;
+            md.timestepping.final_time = md.timestepping.start_time + delta_t;
+
+            % solve
+            md = solve(md,'tr');
+            md = loadresultsfromcluster(md);        
+        end
+
+        results = [results, md.results.TransientSolution];
+
+        % subsample to 1/10
+        results = results(1:10:end); % ~ 60 rows 
+        save("perturbation_results_all.mat", "results")
 
         savemodel(org, md);
 

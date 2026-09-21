@@ -1,0 +1,480 @@
+%% Loading
+md_path = 'results/model/ASE_Yang_max_max_softsliding_ShelfCollapseAdaptive.mat';
+load(md_path);
+
+thwaites_fl = expread('data/exp-files/thwaites-flowline.exp');
+pig_fl      = expread('data/exp-files/PIG-flowline.exp');
+thwaites_fl_xy = unique([thwaites_fl.x, thwaites_fl.y], "rows");
+pig_fl_xy      = unique([pig_fl.x,      pig_fl.y], "rows");
+
+thwaites_fl = interpCurviLine(thwaites_fl_xy, 500);
+pig_fl      = interpCurviLine(pig_fl_xy     , 500);
+
+colormap_path = '/home/donglaiyang/Documents/Georgia-Tech/Research/common-data-set/ScientificColourMaps8/';
+load([colormap_path 'bukavu/bukavu.mat'])
+load([colormap_path 'vik/vik.mat'])
+%% extract ice thickness profile, driving stress profile, and basal temperature
+n_time = size(md.results.TransientSolution, 2);
+
+taud_thwaites = cell(n_time, 1);
+taud_pig      = cell(n_time, 1);
+Tb_thwaites   = cell(n_time, 1);
+Tb_pig        = cell(n_time, 1);
+pmp_thwaites  = cell(n_time, 1);
+pmp_pig       = cell(n_time, 1);
+vel_thwaites  = cell(n_time, 1);
+vel_pig       = cell(n_time, 1);
+
+x_element = vertexCoordToCentroid(md.mesh.x2d, md.mesh.elements2d);
+y_element = vertexCoordToCentroid(md.mesh.y2d, md.mesh.elements2d);
+
+for ii = 1:n_time
+    % driving stress (element-centroid interpolant)
+    [~, ~, taud] = drivingstressFromResults(md, ii);
+    taud_func = scatteredInterpolant(x_element, y_element, taud);
+    taud_thwaites{ii} = taud_func(thwaites_fl(:,1), thwaites_fl(:,2));
+    taud_pig{ii}      = taud_func(pig_fl(:,1),      pig_fl(:,2));
+
+    % basal temperature (vertex interpolant, layer 1 = base)
+    Tb = project2d(md, md.results.TransientSolution(ii).Temperature, 1);
+    Tb_func = scatteredInterpolant(md.mesh.x2d, md.mesh.y2d, Tb);
+    Tb_thwaites{ii} = Tb_func(thwaites_fl(:,1), thwaites_fl(:,2));
+    Tb_pig{ii}      = Tb_func(pig_fl(:,1),      pig_fl(:,2));
+
+    % pressure melting point
+    h   = project2d(md, md.results.TransientSolution(ii).Thickness, 1);
+    pmp = md.materials.meltingpoint - md.materials.beta * ...
+          md.materials.rho_ice * md.constants.g * h + 1e-5;
+    pmp_func = scatteredInterpolant(md.mesh.x2d, md.mesh.y2d, pmp);
+    pmp_thwaites{ii} = pmp_func(thwaites_fl(:,1), thwaites_fl(:,2));
+    pmp_pig{ii}      = pmp_func(pig_fl(:,1),      pig_fl(:,2));
+
+    % velocity magnitude (vertex interpolant, layer 1 = base)
+    vel = project2d(md, md.results.TransientSolution(ii).Vel, 1);
+    vel_func = scatteredInterpolant(md.mesh.x2d, md.mesh.y2d, vel);
+    vel_thwaites{ii} = vel_func(thwaites_fl(:,1), thwaites_fl(:,2));
+    vel_pig{ii}      = vel_func(pig_fl(:,1),      pig_fl(:,2));
+end
+
+% bed topography (static — outside loop)
+bed = project2d(md, md.geometry.bed, 1);
+bed_func = scatteredInterpolant(md.mesh.x2d, md.mesh.y2d, bed);
+bed_thwaites = bed_func(thwaites_fl(:,1), thwaites_fl(:,2));
+bed_pig      = bed_func(pig_fl(:,1),      pig_fl(:,2));
+
+
+%% Make a 2D map showing where the flowlines are
+mda = augmentModel(md);
+md2d = mda.create_2D_mesh();
+% get baseline velocity vector
+vx = project2d(md, md.initialization.vx, md.mesh.numberoflayers);
+vy = project2d(md, md.initialization.vy, md.mesh.numberoflayers);
+
+% ── Subsample nodes for quiver ────────────────────────────────────────────
+quiver_skip = 10;
+idx_q = 1:quiver_skip:length(md.mesh.x2d);
+
+xq  = md.mesh.x2d(idx_q);
+yq  = md.mesh.y2d(idx_q);
+vxq = vx(idx_q);
+vyq = vy(idx_q);
+
+% ── Log-scale the arrow lengths ───────────────────────────────────────────
+speed     = sqrt(vxq.^2 + vyq.^2);
+log_speed = log10(speed + 1);
+unit_vx   = vxq ./ (speed + eps);
+unit_vy   = vyq ./ (speed + eps);
+
+arrow_scale = 8000;
+vx_scaled   = unit_vx .* log_speed * arrow_scale;
+vy_scaled   = unit_vy .* log_speed * arrow_scale;
+
+% ── Plot ──────────────────────────────────────────────────────────────────
+figure('Position',[1000,500,1000,1000])
+patch('Faces',    md.mesh.elements2d, ...
+      'Vertices', [md.mesh.x2d md.mesh.y2d], ...
+      'FaceVertexCData', bed, ...
+      'FaceColor', 'interp', 'EdgeColor', 'none');
+colormap(bukavu);
+clim([-2000,2000])
+
+% ── Colorbar: wider + bigger font ─────────────────────────────────────────
+cb = colorbar;
+cb.FontSize = 24;                  % 3× a typical 12pt default
+cb.Position(2) = cb.Position(2) + 0.1;
+cb.Position(3) = cb.Position(3) * 2;   % triple the width
+cb.Position(4) = cb.Position(4) * 0.8;
+cb.Label.String = 'Bed topography (m)';
+hold on;
+
+quiver(xq, yq, vx_scaled, vy_scaled, 0, ...
+       'Color', [0.2 0.2 0.2], ...
+       'LineWidth', 0.8, ...
+       'MaxHeadSize', 0.3);
+
+plot(thwaites_fl(:,1), thwaites_fl(:,2), '-', 'LineWidth', 4, 'Color', 'blue');
+plot(pig_fl(:,1),      pig_fl(:,2),      '-', 'LineWidth', 4, 'Color', 'red');
+
+scatter(thwaites_fl(1,1), thwaites_fl(1,2), 300, 'b', 'filled');
+scatter(pig_fl(1,1),      pig_fl(1,2),      300, 'r', 'filled');
+
+hold off;
+axis off;
+
+exportgraphics(gcf,'figs/bedmap_flowlines.png','Resolution',300)
+
+%% make tiledlayout plot
+plot_time_interval = 4;
+fs = 26;
+
+figure('Position', [1000, 500, 1400, 1100]);
+tiledlayout(3, 2, 'TileSpacing', 'tight', 'Padding', 'compact');
+
+% ── Precompute distances ──────────────────────────────────────────────────
+dx = diff(thwaites_fl(:,1)); dy = diff(thwaites_fl(:,2));
+dist_thwaites = cumsum([0; sqrt(dx.^2 + dy.^2)]);   
+
+dx = diff(pig_fl(:,1));      dy = diff(pig_fl(:,2));
+dist_pig = cumsum([0; sqrt(dx.^2 + dy.^2)]);
+
+epsilon = 0.5;
+
+% ═════════════════════════════════════════════════════════════════════════
+% ROW 1 — Driving Stress
+% ═════════════════════════════════════════════════════════════════════════
+
+% ── [1,1] Thwaites – Driving Stress ──────────────────────────────────────
+nexttile(1);
+tau_base = taud_thwaites{1};
+
+yyaxis left
+plot(dist_thwaites, tau_base, 'k-', 'LineWidth', 2);
+ylabel('\tau_d (Pa)  {\color{black}\bf—}');
+ax = gca; ax.YAxis(1).Color = 'k';
+
+yyaxis right
+hold on;
+for i = 2:plot_time_interval:n_time
+    delta_tau = taud_thwaites{i} - tau_base;
+    pos = delta_tau; pos(pos < 0) = 0;
+    fill([dist_thwaites; flipud(dist_thwaites)], [pos; zeros(size(pos))], ...
+         'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+    neg = delta_tau; neg(neg > 0) = 0;
+    fill([dist_thwaites; flipud(dist_thwaites)], [neg; zeros(size(neg))], ...
+         'b', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+end
+hold off;
+ylabel('\Delta\tau_d (Pa)');
+ax.YAxis(2).Color = 'k';
+title('Thwaites'); xticklabels([]);
+grid on; box on; set(gca, 'FontSize', fs);
+
+% ── [1,2] PIG – Driving Stress ───────────────────────────────────────────
+nexttile(2);
+tau_base = taud_pig{1};
+
+yyaxis left
+plot(dist_pig, tau_base, 'k-', 'LineWidth', 2);
+ylabel('\tau_d (Pa)  {\color{black}\bf—}');
+ax = gca; ax.YAxis(1).Color = 'k';
+
+yyaxis right
+hold on;
+for i = 2:plot_time_interval:n_time
+    delta_tau = taud_pig{i} - tau_base;
+    pos = delta_tau; pos(pos < 0) = 0;
+    fill([dist_pig; flipud(dist_pig)], [pos; zeros(size(pos))], ...
+         'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+    neg = delta_tau; neg(neg > 0) = 0;
+    fill([dist_pig; flipud(dist_pig)], [neg; zeros(size(neg))], ...
+         'b', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+end
+hold off;
+ylabel('\Delta\tau_d (Pa)');
+ax.YAxis(2).Color = 'k';
+title('PIG'); xticklabels([]);
+grid on; box on; set(gca, 'FontSize', fs);
+
+% ═════════════════════════════════════════════════════════════════════════
+% ROW 2 — Velocity
+% ═════════════════════════════════════════════════════════════════════════
+
+% ── [2,1] Thwaites – Velocity ─────────────────────────────────────────────
+nexttile(3);
+vel_base = vel_thwaites{1};
+
+yyaxis left
+plot(dist_thwaites, vel_base, 'k-', 'LineWidth', 2);
+ylabel('Velocity (m/yr)  {\color{black}\bf—}');
+ax = gca; ax.YAxis(1).Color = 'k';
+
+yyaxis right
+hold on;
+for i = 2:plot_time_interval:n_time
+    delta_vel = vel_thwaites{i} - vel_base;
+    pos = delta_vel; pos(pos < 0) = 0;
+    fill([dist_thwaites; flipud(dist_thwaites)], [pos; zeros(size(pos))], ...
+         'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+    neg = delta_vel; neg(neg > 0) = 0;
+    fill([dist_thwaites; flipud(dist_thwaites)], [neg; zeros(size(neg))], ...
+         'b', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+end
+hold off;
+ylabel('\DeltaV (m/yr)');
+ax.YAxis(2).Color = 'k';
+xticklabels([]);
+grid on; box on; set(gca, 'FontSize', fs);
+
+% ── [2,2] PIG – Velocity ──────────────────────────────────────────────────
+nexttile(4);
+vel_base = vel_pig{1};
+
+yyaxis left
+plot(dist_pig, vel_base, 'k-', 'LineWidth', 2);
+ylabel('Velocity (m/yr)  {\color{black}\bf—}');
+ax = gca; ax.YAxis(1).Color = 'k';
+
+yyaxis right
+hold on;
+for i = 2:plot_time_interval:n_time
+    delta_vel = vel_pig{i} - vel_base;
+    pos = delta_vel; pos(pos < 0) = 0;
+    fill([dist_pig; flipud(dist_pig)], [pos; zeros(size(pos))], ...
+         'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+    neg = delta_vel; neg(neg > 0) = 0;
+    fill([dist_pig; flipud(dist_pig)], [neg; zeros(size(neg))], ...
+         'b', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+end
+hold off;
+ylabel('\DeltaV (m/yr)');
+ax.YAxis(2).Color = 'k';
+xticklabels([]);
+grid on; box on; set(gca, 'FontSize', fs);
+
+% ═════════════════════════════════════════════════════════════════════════
+% ROW 3 — Bed & ΔT_b
+% ═════════════════════════════════════════════════════════════════════════
+
+% ── [3,1] Thwaites – Bed & ΔT_b ──────────────────────────────────────────
+nexttile(5);
+Tb_base        = Tb_thwaites{1};
+pmp_base       = pmp_thwaites{1};
+already_thawed = abs(Tb_base - pmp_base) <= epsilon;
+
+yyaxis left
+plot(dist_thwaites, bed_thwaites, 'k-', 'LineWidth', 2);
+ylabel('Bed elev. (m)  {\color{black}\bf—}');
+ax = gca; ax.YAxis(1).Color = 'k';
+
+yyaxis right
+hold on;
+for i = 2:plot_time_interval:n_time
+    delta_Tb = Tb_thwaites{i} - Tb_base;
+    pos = delta_Tb; pos(pos < 0) = 0;
+    fill([dist_thwaites; flipud(dist_thwaites)], [pos; zeros(size(pos))], ...
+         'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+    neg = delta_Tb; neg(neg > 0) = 0;
+    fill([dist_thwaites; flipud(dist_thwaites)], [neg; zeros(size(neg))], ...
+         'b', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+end
+yl = ylim;
+thawed_y = nan(size(dist_thwaites));
+thawed_y(already_thawed) = yl(2);
+plot(dist_thwaites, thawed_y, '-', 'Color', [0.85 0.33 0.10], 'LineWidth', 12);
+hold off;
+ylabel('\DeltaT_b (K)  [{\color[rgb]{0.85,0.33,0.10}\bf— thawed}]');
+ax.YAxis(2).Color = 'k';
+xlabel('Distance from grounding line (m)');
+grid on; box on; set(gca, 'FontSize', fs);
+
+% ── [3,2] PIG – Bed & ΔT_b ───────────────────────────────────────────────
+nexttile(6);
+Tb_base        = Tb_pig{1};
+pmp_base       = pmp_pig{1};
+already_thawed = abs(Tb_base - pmp_base) <= epsilon;
+
+yyaxis left
+plot(dist_pig, bed_pig, 'k-', 'LineWidth', 2);
+ylabel('Bed elev. (m)  {\color{black}\bf—}');
+ax = gca; ax.YAxis(1).Color = 'k';
+
+yyaxis right
+hold on;
+for i = 2:plot_time_interval:n_time
+    delta_Tb = Tb_pig{i} - Tb_base;
+    pos = delta_Tb; pos(pos < 0) = 0;
+    fill([dist_pig; flipud(dist_pig)], [pos; zeros(size(pos))], ...
+         'r', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+    neg = delta_Tb; neg(neg > 0) = 0;
+    fill([dist_pig; flipud(dist_pig)], [neg; zeros(size(neg))], ...
+         'b', 'FaceAlpha', 0.15, 'EdgeColor', 'none');
+end
+yl = ylim;
+thawed_y = nan(size(dist_pig));
+thawed_y(already_thawed) = yl(2);
+plot(dist_pig, thawed_y, '-', 'Color', [0.85 0.33 0.10], 'LineWidth', 12);
+hold off;
+ylabel('\DeltaT_b (K)  [{\color[rgb]{0.85,0.33,0.10}\bf— thawed}]');
+ax.YAxis(2).Color = 'k';
+xlabel('Distance from grounding line (m)');
+grid on; box on; set(gca, 'FontSize', fs);
+
+drawnow;
+
+%% plot animated cross section
+sol = md.trans
+
+
+% ── Settings ─────────────────────────────────────────────────────────────
+gif_filename  = 'thwaites_temp_xsection.gif';
+frame_delay   = 0.15;        % seconds between frames
+fs            = 20;          % font size
+n_zeta        = 50;          % number of normalized vertical levels to interpolate onto
+n_time        = size(md.results.TransientSolution, 2);
+
+% ── Precompute flowline distance (downstream = 0) ─────────────────────────
+dx = diff(thwaites_fl(:,1));
+dy = diff(thwaites_fl(:,2));
+dist_thwaites = cumsum([0; sqrt(dx.^2 + dy.^2)]);   % m, downstream = 0
+dist_km = dist_thwaites / 1e3;                        % convert to km for plotting
+n_fl = length(dist_km);
+
+% ── Normalized vertical axis ──────────────────────────────────────────────
+zeta = linspace(0, 1, n_zeta);   % 0 = base, 1 = surface
+
+% ── Preallocate interpolated temperature grid ─────────────────────────────
+% Fast version — build interpolants once per time step, not per point
+n_layers = md.mesh.numberoflayers;
+T_all  = zeros(n_layers, n_fl);
+for lyr = 1:n_layers
+    T_lyr = project2d(md, sol.Temperature, lyr);
+    F = scatteredInterpolant(md.mesh.x2d, md.mesh.y2d, T_lyr, 'linear', 'nearest');
+    T_all(lyr, :) = F(flowline(:,1), flowline(:,2));
+end
+% then interp1 column-wise onto zeta
+T_grid = interp1(linspace(0,1,n_layers), T_all, zeta);  % [n_zeta × n_fl]
+
+
+% ── Colormap for ΔT ───────────────────────────────────────────────────────
+cmap = vik(256);    % or use: diverging_map / custom; see note below
+
+% ── Compute color limits from full run (for consistent colorbar) ──────────
+fprintf('Pre-scanning ΔT range...\n');
+dT_all = [];
+T_prev = T_grid(1);
+for ii = 2:n_time
+    T_curr = T_grid(ii);
+    dT_all = [dT_all; T_curr(:) - T_prev(:)];
+    T_prev = T_curr;
+end
+clim_val = max(abs(prctile(dT_all, [2 98])));   % symmetric, robust to outliers
+clim_val = max(clim_val, 0.01);                  % avoid zero range
+fprintf('ΔT color range: ±%.3f K\n', clim_val);
+
+% ── Build GIF ─────────────────────────────────────────────────────────────
+fig = figure('Position', [100, 100, 1200, 500], 'Color', 'w');
+
+T_prev = T_grid(1);
+
+for ii = 2:n_time
+
+    T_curr = T_grid(ii);
+    dT     = T_curr - T_prev;   % [n_zeta × n_fl]
+
+    t_curr = md.results.TransientSolution(ii).time;
+    t_prev = md.results.TransientSolution(ii-1).time;
+
+    clf;
+
+    % ── Left panel: absolute temperature ─────────────────────────────────
+    subplot(1, 2, 1);
+    imagesc(dist_km, zeta, T_curr);
+    set(gca, 'YDir', 'normal');          % zeta=0 at bottom
+    colormap(gca, parula(256));
+    cb1 = colorbar;
+    cb1.Label.String = 'Temperature (K)';
+    cb1.Label.FontSize = fs - 2;
+    xlabel('Distance from grounding line (km)', 'FontSize', fs);
+    ylabel('Normalized depth  \zeta  (0=base, 1=surface)', 'FontSize', fs);
+    title(sprintf('T field   t = %.1f yr', t_curr), 'FontSize', fs);
+    set(gca, 'FontSize', fs);
+    axis tight;
+
+    % ── Right panel: ΔT since previous frame ─────────────────────────────
+    subplot(1, 2, 2);
+    imagesc(dist_km, zeta, dT);
+    set(gca, 'YDir', 'normal');
+    colormap(gca, cmap);
+    clim([-clim_val, clim_val]);
+    cb2 = colorbar;
+    cb2.Label.String = sprintf('\\DeltaT (K)  [t=%.1f \\rightarrow %.1f yr]', t_prev, t_curr);
+    cb2.Label.FontSize = fs - 2;
+    xlabel('Distance from grounding line (km)', 'FontSize', fs);
+    ylabel('Normalized depth  \zeta  (0=base, 1=surface)', 'FontSize', fs);
+    title(sprintf('\\DeltaT   step %d / %d', ii-1, n_time-1), 'FontSize', fs);
+    set(gca, 'FontSize', fs);
+    axis tight;
+
+    drawnow;
+
+    % ── Capture frame ─────────────────────────────────────────────────────
+    frame = getframe(fig);
+    img   = frame2im(frame);
+    [imind, cm] = rgb2ind(img, 256);
+
+    if ii == 2
+        imwrite(imind, cm, gif_filename, 'gif', ...
+                'Loopcount', Inf, 'DelayTime', frame_delay);
+    else
+        imwrite(imind, cm, gif_filename, 'gif', ...
+                'WriteMode', 'append', 'DelayTime', frame_delay);
+    end
+
+    T_prev = T_curr;
+    fprintf('Frame %d / %d written\n', ii-1, n_time-1);
+end
+
+fprintf('GIF saved to: %s\n', gif_filename);
+
+
+function T_grid = compute_T_grid(md, flowline, zeta, n_fl, n_zeta, ii)
+% Interpolates 3D temperature onto a normalized vertical axis
+% along the flowline for time step ii.
+% Output: T_grid [n_zeta × n_fl]
+
+    sol  = md.results.TransientSolution(ii);
+    n_layers = md.mesh.numberoflayers;
+
+    T_grid = zeros(n_zeta, n_fl);
+
+    for k = 1:n_fl
+        xq = flowline(k, 1);
+        yq = flowline(k, 2);
+
+        % Extract temperature at each layer at this flowline point
+        T_col  = zeros(n_layers, 1);
+        S_col  = 0;
+        B_col  = 0;
+
+        for lyr = 1:n_layers
+            T_lyr  = project2d(md, sol.Temperature, lyr);
+            interp_T = scatteredInterpolant(md.mesh.x2d, md.mesh.y2d, T_lyr, ...
+                                            'linear', 'nearest');
+            T_col(lyr) = interp_T(xq, yq);
+        end
+
+        % Surface and base elevation for normalization
+        S_interp = scatteredInterpolant(md.mesh.x2d, md.mesh.y2d, ...
+                       project2d(md, sol.Surface, 1), 'linear', 'nearest');
+        B_interp = scatteredInterpolant(md.mesh.x2d, md.mesh.y2d, ...
+                       project2d(md, sol.Base,    1), 'linear', 'nearest');
+        S_col = S_interp(xq, yq);
+        B_col = B_interp(xq, yq);
+
+        % Layer zeta positions in ISSM (layer 1=base, layer n=surface)
+        zeta_layers = linspace(0, 1, n_layers);
+
+        % Interpolate onto uniform zeta grid
+        T_grid(:, k) = interp1(zeta_layers, T_col, zeta, 'linear', 'extrap');
+    end
+end
