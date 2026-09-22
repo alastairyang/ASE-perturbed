@@ -9,7 +9,7 @@
 
 % ----------------------------------------
 % -------------- PARAMETERS --------------
-sim_steps = [7,8];
+sim_steps = [7];
 name = 'ASE';
 Ts_spec = "max";
 smb_spec = "max";
@@ -564,24 +564,44 @@ for steps = sim_steps
         md.levelset.spclevelset = [init_ice_mask_t, collapse_ice_mask_t, phase1_ice_mask_t, phase2_ice_mask_t];
         
         % update the surface temperautre forcing
+        smb_ori_full = md.smb.mass_balance;
+        Ts_ori_full  = md.thermal.spctemperature;
+        smb_ori_surf = project2d(md, md.smb.mass_balance, md.mesh.numberoflayers);
+        Ts_ori_surf  = project2d(md, md.thermal.spctemperature, md.mesh.numberoflayers);
+        md.smb.mass_balance = [];
+        md.thermal.spctemperature = [];
+        % note that all these forcing data are anomaly, meaning they are to
+        % be added to the baseline ('_ori')
         switch forcing_proj
             case "CESM"
                 surface_forcing = load('data/projection-climate-forcing/CESM2-WACCM_16km_anomaly2015_ssp585_1995-2300.mat');
                 % here we are assuming the forcing data starts on 2015
+                time_shifted = surface_forcing.year - surface_forcing.year(1);
                 nt = numel(surface_forcing.year);
                 for ii = 1:nt
-                    Ts  = surface_forcing.ts_anom2015;
-                    smb = surface_forcing.smb_anom2015; 
+                    Ts  = surface_forcing.ts_anom2015(:,:,ii);
+                    smb = surface_forcing.smb_anom2015(:,:,ii); 
                     Ts_forcing_fun  = scatteredInterpolant(surface_forcing.x,...
                                                           surface_forcing.y,...
                                                           Ts(:));
                     smb_forcing_fun = scatteredInterpolant(surface_forcing.x,...
                                                            surface_forcing.y,...
                                                            smb(:));
-                    Ts_interp  = Ts_forcing_fun(md.mesh.x2d, md.mesh.y2d);
-                    smb_interp = 
+                    Ts_interp  = Ts_forcing_fun(md.mesh.x2d, md.mesh.y2d) + Ts_ori_surf;
+                    smb_interp = smb_forcing_fun(md.mesh.x2d, md.mesh.y2d)+ smb_ori_surf;
                     
+                    % add to the model
+                    Ts_interp  = Ts_ori_full(end-md.mesh.numberofvertices2d:end,1);
+                    smb_interp = repmat(smb_interp, md.mesh.numberoflayers,1);
 
+                    % address the melting point issue
+                    Ts_interp(find(Ts_interp > apm)) = apm(Ts_interp > apm);
+
+                    Ts_interp  = [Ts_interp; time_shifted(ii)];
+                    smb_interp = [smb_interp; time_shifted(ii)];
+                    md.thermal.spctemperature = [md.thermal.spctemperature, Ts_interp];
+                    md.smb.mass_balance       = [md.smb.mass_balance, smb_interp];                    
+                end
             case "CCSM"
                 load('data/projection-climate-forcing/CCSM4_16km_anomaly2015_RCP85_1995-2300.mat')
             otherwise
@@ -609,8 +629,14 @@ for steps = sim_steps
         md.timestepping.start_time = t_phase1;
         md.timestepping.final_time = md.timestepping.start_time + t_final;
 
+        replicate=repmat(md.geometry.surface-md.mesh.z,1,size(md.thermal.spctemperature,2));
+        apm = md.materials.meltingpoint-md.materials.beta*md.materials.rho_ice*md.constants.g*replicate+1e-5;
+        spctemperature_val = md.thermal.spctemperature(1:end-1,:);
+        spctemperature_val(find(spctemperature_val > apm)) = apm(spctemperature_val > apm);
+        md.thermal.spctemperature(1:end-1,:) = spctemperature_val;
+
         % solve
-        md = solve(md,'tr');
+        md = solve(md,'tr');lo
         md = loadresultsfromcluster(md);        
 
 

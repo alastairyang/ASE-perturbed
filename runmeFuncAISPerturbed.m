@@ -9,7 +9,7 @@
 
 % ----------------------------------------
 % -------------- PARAMETERS --------------
-sim_steps = [7,8];
+sim_steps = [8];
 name = 'ASE';
 Ts_spec = "max";
 smb_spec = "max";
@@ -564,8 +564,10 @@ for steps = sim_steps
         md.levelset.spclevelset = [init_ice_mask_t, collapse_ice_mask_t, phase1_ice_mask_t, phase2_ice_mask_t];
         
         % update the surface temperautre forcing
-        smb_ori = project2d(md, md.smb.mass_balance, md.mesh.numberoflayers);
-        Ts_ori  = project2d(md, md.thermal.spctemperature, md.mesh.numberoflayers);
+        smb_ori_full = md.smb.mass_balance;
+        Ts_ori_full  = md.thermal.spctemperature;
+        smb_ori_surf = project2d(md, md.smb.mass_balance, md.mesh.numberoflayers);
+        Ts_ori_surf  = project2d(md, md.thermal.spctemperature, md.mesh.numberoflayers);
         md.smb.mass_balance = [];
         md.thermal.spctemperature = [];
         % note that all these forcing data are anomaly, meaning they are to
@@ -585,19 +587,31 @@ for steps = sim_steps
                     smb_forcing_fun = scatteredInterpolant(surface_forcing.x,...
                                                            surface_forcing.y,...
                                                            smb(:));
-                    Ts_interp  = Ts_forcing_fun(md.mesh.x2d, md.mesh.y2d) + Ts_ori;
-                    smb_interp = smb_forcing_fun(md.mesh.x2d, md.mesh.y2d)+ smb_ori;
+                    Ts_interp  = Ts_forcing_fun(md.mesh.x2d, md.mesh.y2d) + Ts_ori_surf;
+                    smb_interp = smb_forcing_fun(md.mesh.x2d, md.mesh.y2d)+ smb_ori_surf;
                     
                     % add to the model
-                    Ts_interp  = repmat(Ts_interp,  md.mesh.numberoflayers,1);
-                    smb_interp = repmat(smb_interp, md.mesh.numberoflayers,1);
-                    Ts_interp  = [Ts_interp; time_shifted(ii)];
-                    smb_interp = [smb_interp; time_shifted(ii)];
+                    Ts_full_modified = Ts_ori_full;
+                    Ts_full_modified(end-md.mesh.numberofvertices2d+1:end,1) = Ts_interp; % just override the surface temperature;
+                    % note here that we are not changing the rest of the
+                    % ice column temeprature along the boundary -- this is
+                    % not rigorous but just a first step
+                    smb_full_modified = smb_ori_full;
+                    smb_full_modified(end-md.mesh.numberofvertices2d+1:end,1) = smb_interp;
+
+                    % address the melting point issue
+                    Ts_full_modified(find(Ts_full_modified > apm)) = apm(Ts_full_modified > apm);
+
+                    Ts_interp  = [Ts_full_modified; time_shifted(ii)];
+                    smb_interp = [smb_full_modified; time_shifted(ii)];
                     md.thermal.spctemperature = [md.thermal.spctemperature, Ts_interp];
                     md.smb.mass_balance       = [md.smb.mass_balance, smb_interp];                    
                 end
             case "CCSM"
                 load('data/projection-climate-forcing/CCSM4_16km_anomaly2015_RCP85_1995-2300.mat')
+
+                % to be continued....
+                
             otherwise
                 error('Unknow projection forcing spec.')
         end
@@ -622,6 +636,12 @@ for steps = sim_steps
         md.timestepping = timesteppingadaptive();
         md.timestepping.start_time = t_phase1;
         md.timestepping.final_time = md.timestepping.start_time + t_final;
+
+        replicate=repmat(md.geometry.surface-md.mesh.z,1,size(md.thermal.spctemperature,2));
+        apm = md.materials.meltingpoint-md.materials.beta*md.materials.rho_ice*md.constants.g*replicate+1e-5;
+        spctemperature_val = md.thermal.spctemperature(1:end-1,:);
+        spctemperature_val(find(spctemperature_val > apm)) = apm(spctemperature_val > apm);
+        md.thermal.spctemperature(1:end-1,:) = spctemperature_val;
 
         % solve
         md = solve(md,'tr');
