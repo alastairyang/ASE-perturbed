@@ -9,7 +9,7 @@
 
 % ----------------------------------------
 % -------------- PARAMETERS --------------
-sim_steps = [8];
+sim_steps = [5];
 name = 'ASE';
 Ts_spec = "max";
 smb_spec = "max";
@@ -367,11 +367,41 @@ for steps = sim_steps
         
         STmean = -40 + 273.15;
         BTmean = -10 + 273.15; % use only as a first guess for model initialization
+
+        % geothermal heat flux
+        % load GHF posterior mean from the inference
+        posterior_path = '/data-archive/ASE-inference/';
+        ghf_posterior = load([posterior_path 'GHF/posterior_low_mean_high.mat']);
+        ghf_mean_interp = InterpFromGridToMesh(ghf_posterior.x, ghf_posterior.y,...
+                                               ghf_posterior.posterior_mean,...
+                                               md.mesh.x2d, md.mesh.y2d, nan);
+        % slightly extrapolate to areas under ice shelf
+        % GHF there doesn't matter anyways
+        nonnan_idx = ~isnan(ghf_mean_interp);
+        nonnan_x   = md.mesh.x2d(nonnan_idx);
+        nonnan_y   = md.mesh.y2d(nonnan_idx);
+        nonnan_ghf = ghf_mean_interp(nonnan_idx);
+        ghf_mean_interp_func = scatteredInterpolant(nonnan_x, nonnan_y,...
+                                                    nonnan_ghf, 'linear','linear');
+        ghf_mean_interp_full = ghf_mean_interp_func(md.mesh.x2d, md.mesh.y2d) * 1e-3; % convert to W/m^2
+        
+        ghf_prefactor = 0.7; % ad hoc measure to make interior cooler
+
+        md.basalforcings.geothermalflux = ghf_prefactor * repmat(ghf_mean_interp_full, md.mesh.numberoflayers,1);
+        ghf = project2d(md, md.basalforcings.geothermalflux, 1);
+        
+        % run the 1D model (2-5 mins)
+        T_interp_func = boundaryThermalProfile(md, ghf, Ts, smb,'FD');
+
+        x_bound = md.mesh.x(logical(md.mesh.vertexonboundary));
+        y_bound = md.mesh.y(logical(md.mesh.vertexonboundary));
+        z_bound = md.mesh.z(logical(md.mesh.vertexonboundary));
+        T_interp = T_interp_func(x_bound, y_bound, z_bound);
         
         % thermal model: initial and surface boundary conditions
         md.thermal.spctemperature = NaN*ones(md.mesh.numberofvertices, 1);
         md.thermal.spctemperature(find(md.mesh.vertexonsurface)) = Ts;
-        md.thermal.spctemperature(find(md.mesh.vertexonboundary)) = Tinterp(find(md.mesh.vertexonboundary));
+        md.thermal.spctemperature(find(md.mesh.vertexonboundary)) = T_interp;
         md.initialization.temperature = NaN*ones(md.mesh.numberofvertices, 1);
         md.initialization.temperature(find(md.mesh.vertexonsurface)) = Ts;
         % make sure that no point exceeds pressure melting point
@@ -431,26 +461,26 @@ for steps = sim_steps
             md.initialization.vy.^2 + ...
             md.initialization.vz.^2);
 
-        % geothermal heat flux
-        % load GHF posterior mean from the inference
-        posterior_path = '/data-archive/ASE-inference/';
-        ghf_posterior = load([posterior_path 'GHF/posterior_low_mean_high.mat']);
-        ghf_mean_interp = InterpFromGridToMesh(ghf_posterior.x, ghf_posterior.y,...
-                                               ghf_posterior.posterior_mean,...
-                                               md.mesh.x2d, md.mesh.y2d, nan);
-        % slightly extrapolate to areas under ice shelf
-        % GHF there doesn't matter anyways
-        nonnan_idx = ~isnan(ghf_mean_interp);
-        nonnan_x   = md.mesh.x2d(nonnan_idx);
-        nonnan_y   = md.mesh.y2d(nonnan_idx);
-        nonnan_ghf = ghf_mean_interp(nonnan_idx);
-        ghf_mean_interp_func = scatteredInterpolant(nonnan_x, nonnan_y,...
-                                                    nonnan_ghf, 'linear','linear');
-        ghf_mean_interp_full = ghf_mean_interp_func(md.mesh.x2d, md.mesh.y2d) * 1e-3; % convert to W/m^2
-        
-        ghf_prefactor = 0.7; % ad hoc measure to make interior cooler
-
-        md.basalforcings.geothermalflux = ghf_prefactor * repmat(ghf_mean_interp_full, md.mesh.numberoflayers,1);
+        % % geothermal heat flux
+        % % load GHF posterior mean from the inference
+        % posterior_path = '/data-archive/ASE-inference/';
+        % ghf_posterior = load([posterior_path 'GHF/posterior_low_mean_high.mat']);
+        % ghf_mean_interp = InterpFromGridToMesh(ghf_posterior.x, ghf_posterior.y,...
+        %                                        ghf_posterior.posterior_mean,...
+        %                                        md.mesh.x2d, md.mesh.y2d, nan);
+        % % slightly extrapolate to areas under ice shelf
+        % % GHF there doesn't matter anyways
+        % nonnan_idx = ~isnan(ghf_mean_interp);
+        % nonnan_x   = md.mesh.x2d(nonnan_idx);
+        % nonnan_y   = md.mesh.y2d(nonnan_idx);
+        % nonnan_ghf = ghf_mean_interp(nonnan_idx);
+        % ghf_mean_interp_func = scatteredInterpolant(nonnan_x, nonnan_y,...
+        %                                             nonnan_ghf, 'linear','linear');
+        % ghf_mean_interp_full = ghf_mean_interp_func(md.mesh.x2d, md.mesh.y2d) * 1e-3; % convert to W/m^2
+        % 
+        % ghf_prefactor = 0.7; % ad hoc measure to make interior cooler
+        % 
+        % md.basalforcings.geothermalflux = ghf_prefactor * repmat(ghf_mean_interp_full, md.mesh.numberoflayers,1);
 
         % solver specification
         md.timestepping.time_step = 0;
