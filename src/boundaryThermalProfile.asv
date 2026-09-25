@@ -39,9 +39,9 @@ function T_func = boundaryThermalProfile(md, ghf, Ts, smb, outflux_bound, solver
     if numel(Ts)  > md.mesh.numberofvertices2d; error("Expect 2d Ts input"); end
     if numel(smb) > md.mesh.numberofvertices2d; error("Expect 2d SMB input"); end
 
-    GHF_bc = ghf(influx_bound_idx);
-    smb_bc = smb(influx_bound_idx);
-    Ts_bc  = Ts(influx_bound_idx);
+    GHF_bc = ghf;
+    smb_bc = smb;
+    Ts_bc  = Ts;
     
     % get temperature at influx boundaries
     % Parameters you do not need to change
@@ -51,17 +51,20 @@ function T_func = boundaryThermalProfile(md, ghf, Ts, smb, outflux_bound, solver
     dz_ref = 10; % m, spacing
     dTdx = 0; % horizontal temperature gradient
 
+    % create a thermal mode
     n_idx = numel(influx_bound_idx);
+
     z_vec = cell(n_idx,1);
     T_vec = cell(n_idx,1);
 
     for jj = 1:n_idx
+        idx = influx_bound_idx(jj);
         if H_bc(jj) <= dz_ref % if thickness is smaller than ref interval
             dz = H_bc(jj)*0.2;
         else
             dz = dz_ref;
         end
-        tmd = thermal1d(H_bc(jj), dsdx, dz, smb_bc(jj), bm, Ts_bc(jj), GHF_bc(jj), u, dTdx, "DJ", solver);
+        tmd = thermal1d(H_bc(idx), dsdx, dz, smb_bc(idx), bm, Ts_bc(idx), GHF_bc(idx), u, dTdx, "DJ", solver);
         % tmd = tmd.solveNonlinearGI();
         tmd = tmd.solveNonlinearGI();
 

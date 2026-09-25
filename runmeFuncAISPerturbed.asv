@@ -16,7 +16,7 @@ smb_spec = "max";
 forcing_proj = "CESM"; % using CESM2 SSP585 (upper bound);
 sliding_spec = "softsliding";
 nproc   = 20; 
-t_final = 275; % duration of perturbation run. (through 2300)
+t_final = 275; % duration of perturbation run. (starting in 2015 through 2300)
 t_phase1 = 1;  % duration of constant time stepping (relaxing). 
 
 
@@ -375,6 +375,12 @@ for steps = sim_steps
         ghf_mean_interp = InterpFromGridToMesh(ghf_posterior.x, ghf_posterior.y,...
                                                ghf_posterior.posterior_mean,...
                                                md.mesh.x2d, md.mesh.y2d, nan);
+
+        % load the flux boundary exp file
+        outflux_bound = 'data/exp-files/outflux-boundary.exp';
+        outflux_bound = expread(outflux_bound);
+        outflux_bound_xy = [outflux_bound.x, outflux_bound.y];
+
         % slightly extrapolate to areas under ice shelf
         % GHF there doesn't matter anyways
         nonnan_idx = ~isnan(ghf_mean_interp);
@@ -391,12 +397,23 @@ for steps = sim_steps
         ghf = project2d(md, md.basalforcings.geothermalflux, 1);
         
         % run the 1D model (2-5 mins)
-        T_interp_func = boundaryThermalProfile(md, ghf, Ts, smb,'FD');
+        T_interp_func = boundaryThermalProfile(md, ghf, Ts, smb, outflux_bound_xy, 'FD');
+        vertexonboundary_idx = find(md.mesh.vertexonboundary);
+
+        x_bound = md.mesh.x(logical(md.mesh.vertexonboundary));
+        y_bound = md.mesh.y(logical(md.mesh.vertexonboundary));
+        z_bound = md.mesh.z(logical(md.mesh.vertexonboundary));
+        influx = ~inpolygon(x_bound, y_bound, outflux_bound_xy(:,1), outflux_bound_xy(:,2));
+        influx_bound_idx = vertexonboundary_idx(influx);
+
+        T_interp = T_interp_func(x_bound(influx),...
+                                 y_bound(influx),...
+                                 z_bound(influx));
         
         % thermal model: initial and surface boundary conditions
         md.thermal.spctemperature = NaN*ones(md.mesh.numberofvertices, 1);
         md.thermal.spctemperature(find(md.mesh.vertexonsurface)) = Ts;
-        md.thermal.spctemperature(find(md.mesh.vertexonboundary)) = Tinterp(find(md.mesh.vertexonboundary));
+        md.thermal.spctemperature(influx_bound_idx) = T_interp;
         md.initialization.temperature = NaN*ones(md.mesh.numberofvertices, 1);
         md.initialization.temperature(find(md.mesh.vertexonsurface)) = Ts;
         % make sure that no point exceeds pressure melting point
@@ -604,6 +621,7 @@ for steps = sim_steps
                 time_shifted = surface_forcing.year - surface_forcing.year(1);
                 nt = numel(surface_forcing.year);
                 for ii = 1:nt
+                    tic 
                     Ts  = surface_forcing.ts_anom2015(:,:,ii);
                     smb = surface_forcing.smb_anom2015(:,:,ii); 
                     Ts_forcing_fun  = scatteredInterpolant(surface_forcing.x,...
@@ -625,12 +643,33 @@ for steps = sim_steps
                     smb_full_modified(end-md.mesh.numberofvertices2d+1:end,1) = smb_interp;
 
                     % address the melting point issue
-                    Ts_full_modified(find(Ts_full_modified > apm)) = apm(Ts_full_modified > apm);
+                    Ts_full_modified(logical(Ts_full_modified > apm)) = apm(Ts_full_modified > apm);   
 
-                    Ts_interp  = [Ts_full_modified; time_shifted(ii)];
+                    % Re-compute the ice sheet boundary temperature profile
+                    ghf_2d = project2d(md,md.basalforcings.geothermalflux,1);
+                    Ts_2d  = project2d(md,Ts_full_modified,md.mesh.numberoflayers);
+                    smb_2d = project2d(md,smb_full_modified,md.mesh.numberoflayers);
+                    T_interp_func = boundaryThermalProfile(md, ghf_2d, Ts_2d, smb_2d,'bvp4c');
+            
+                    x_bound = md.mesh.x(logical(md.mesh.vertexonboundary));
+                    y_bound = md.mesh.y(logical(md.mesh.vertexonboundary));
+                    z_bound = md.mesh.z(logical(md.mesh.vertexonboundary));
+                    T_interp = T_interp_func(x_bound, y_bound, z_bound);
+
+                    % add them back in
+                    T_full = Ts_full_modified;
+                    T_full(logical(md.mesh.vertexonboundary)) = T_interp;
+                    T_full(logical(T_full > apm)) = apm(T_full > apm);
+
+
+                    % add time stamp and back to class module
+                    Ts_interp  = [T_full; time_shifted(ii)];
                     smb_interp = [smb_full_modified; time_shifted(ii)];
                     md.thermal.spctemperature = [md.thermal.spctemperature, Ts_interp];
-                    md.smb.mass_balance       = [md.smb.mass_balance, smb_interp];                    
+                    md.smb.mass_balance       = [md.smb.mass_balance, smb_interp];  
+                    tt = toc;
+                    disp(['time = ' num2str(tt)])
+                    pause(2)
                 end
             case "CCSM"
                 load('data/projection-climate-forcing/CCSM4_16km_anomaly2015_RCP85_1995-2300.mat')
@@ -652,6 +691,8 @@ for steps = sim_steps
     end
 
     if perform(org, 'ShelfCollapseAdaptiveRegularSliding') % {{{8 step 8 perturbation: shelf collapse - adaptive time stepping 
+        % This experiment runs the rest of the 275 years (or however long that
+        % is)
         md = loadmodel(org, 'ShelfCollapseConstantStep');
         md = transientrestart(md);
 
@@ -665,7 +706,7 @@ for steps = sim_steps
         replicate=repmat(md.geometry.surface-md.mesh.z,1,size(md.thermal.spctemperature,2));
         apm = md.materials.meltingpoint-md.materials.beta*md.materials.rho_ice*md.constants.g*replicate+1e-5;
         spctemperature_val = md.thermal.spctemperature(1:end-1,:);
-        spctemperature_val(find(spctemperature_val > apm)) = apm(spctemperature_val > apm);
+        spctemperature_val(logical(spctemperature_val > apm)) = apm(spctemperature_val > apm);
         md.thermal.spctemperature(1:end-1,:) = spctemperature_val;
 
         % solve
