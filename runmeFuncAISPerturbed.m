@@ -619,7 +619,7 @@ for steps = sim_steps
                 % here we are assuming the forcing data starts on 2015
                 time_shifted = surface_forcing.year - surface_forcing.year(1);
                 nt = numel(surface_forcing.year);
-                for ii = 1:nt
+                for ii = 1:5:nt % jump every 5 output from sims. 
                     tic 
                     Ts  = surface_forcing.ts_anom2015(:,:,ii);
                     smb = surface_forcing.smb_anom2015(:,:,ii); 
