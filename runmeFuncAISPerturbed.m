@@ -9,12 +9,12 @@
 
 % ----------------------------------------
 % -------------- PARAMETERS --------------
-sim_steps = [7];
+sim_steps = [5,6];
 name = 'ASE';
 Ts_spec = "max";
 smb_spec = "max";
 forcing_proj = "CESM"; % using CESM2 SSP585 (upper bound);
-sliding_spec = "softsliding";
+sliding_spec = "8";
 nproc   = 20; 
 t_final = 275; % duration of perturbation run. (starting in 2015 through 2300)
 t_phase1 = 1;  % duration of constant time stepping (relaxing). 
@@ -58,13 +58,16 @@ model_name_prefix = convertStringsToChars(model_name_prefix);
 
 % file paths
 switch sliding_spec
-    case "hardsliding"
-        par_path = [project_data_dir 'par-files/thwaites-PIG-hardsliding.par'];
     case "softsliding"
         par_path = [project_data_dir 'par-files/thwaites-PIG-softsliding.par'];
+    case "8"
+        par_path = [project_data_dir 'par-files/thwaites-PIG-softsliding-8.par'];
+    case "1"
+        par_path = [project_data_dir 'par-files/thwaites-PIG-softsliding-1.par'];
     otherwise
         error('Unknow sliding specification!')
 end
+
 vel_path         = [common_data_dir 'velocity/antarctica_ice_velocity_450m_v2.nc'];
 GHF_path         = [project_data_dir 'saved-data/GHF-forcing/sequential-gaussian-sim/scaled/'];
 eliza_model_path = [common_data_dir 'other-simulations/Dawson_Antarctica_Initialization.mat'];
@@ -105,9 +108,9 @@ for steps = sim_steps
             md.mesh.x, md.mesh.y, 0);
 
         % material prop for getting strain rate
-        md.materials.rheology_B = cuffey(265.15)*ones(md.mesh.numberofvertices,1); % -23 degree depth averaged
+        md.materials.rheology_B = cuffey(253.15)*ones(md.mesh.numberofvertices,1); % -20 degree depth averaged
         md.materials.rheology_n = 3*ones(md.mesh.numberofelements,1);
-        md.materials.rheology_law = 'CuffeyTemperate';
+        md.materials.rheology_law = 'Cuffey';
 
         % for thermal model: use strain rate as a proxy
         % to refine the mesh
@@ -181,17 +184,17 @@ for steps = sim_steps
         
         % fast flow
         pos = md.inversion.vel_obs > 200;
-        switch sliding_spec
-            case "hardsliding"
-                md.inversion.maxiter = 50;
-                md.inversion.cost_functions_coefficients(:,1) = 1000; % 800
-                md.inversion.cost_functions_coefficients(:,2) = 0.1; % 1
-                md.inversion.cost_functions_coefficients(:,3) = 5e-6; % 1e-6
-                md.inversion.min_parameters = 0.01*ones(md.mesh.numberofvertices,1);
-                md.inversion.max_parameters = 1e5*ones(md.mesh.numberofvertices,1);
-                pos=find(md.mask.ice_levelset>0);
-                md.inversion.cost_functions_coefficients(pos,1)=0;
-            case "softsliding"
+        % switch sliding_spec
+        %     case "hardsliding"
+        %         md.inversion.maxiter = 50;
+        %         md.inversion.cost_functions_coefficients(:,1) = 1000; % 800
+        %         md.inversion.cost_functions_coefficients(:,2) = 0.1; % 1
+        %         md.inversion.cost_functions_coefficients(:,3) = 5e-6; % 1e-6
+        %         md.inversion.min_parameters = 0.01*ones(md.mesh.numberofvertices,1);
+        %         md.inversion.max_parameters = 1e5*ones(md.mesh.numberofvertices,1);
+        %         pos=find(md.mask.ice_levelset>0);
+        %         md.inversion.cost_functions_coefficients(pos,1)=0;
+            % case "softsliding"
                 md.inversion.maxiter = 100;
                 md.inversion.cost_functions_coefficients(:,1) = 50;
                 % md.inversion.cost_functions_coefficients(pos,1) = 500; % 100
@@ -201,13 +204,13 @@ for steps = sim_steps
                 md.inversion.max_parameters = 1e8*ones(md.mesh.numberofvertices,1);
                 pos=find(md.mask.ice_levelset>0);
                 md.inversion.cost_functions_coefficients(pos,1)=0;            
-        end
+        % end
         % pos=find(md.mask.ice_levelset>0);
         % md.inversion.cost_functions_coefficients(pos,1)=0;
         
         % Controls
         md.inversion.control_parameters = {'FrictionCoefficient'};
-        md.inversion.maxsteps = 100;
+        md.inversion.maxsteps = 50;
         md.inversion.control_scaling_factors = 1;
         md.inversion.dxmin = 0.01; % 0.01
         md.inversion.gttol = 1e-8;
